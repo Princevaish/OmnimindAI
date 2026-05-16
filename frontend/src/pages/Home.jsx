@@ -1,12 +1,15 @@
-// Home.jsx — wires all hooks + components, handles upload
-import { useState, useCallback } from "react";
-import Sidebar    from "../components/Sidebar";
-import ChatWindow from "../components/ChatWindow";
-import AgentPanel from "../components/AgentPanel";
-import useChat    from "../hooks/useChat";
-import useAgents  from "../hooks/useAgents";
-import useStreamer from "../hooks/useStreamer";
-import { parseResponse } from "../utils/parseResponse";
+// Home.jsx — wires ThinkingPipeline state into ChatWindow
+import { useState, useCallback, useRef } from "react";
+import Sidebar      from "../components/Sidebar";
+import ChatWindow   from "../components/ChatWindow";
+import AgentPanel   from "../components/AgentPanel";
+import useChat      from "../hooks/useChat";
+import useAgents    from "../hooks/useAgents";
+import useStreamer   from "../hooks/useStreamer";
+import { parseResponse }    from "../utils/parseResponse";
+import { parsePlanToStates } from "../utils/parsePlan";
+
+const STEP_DURATION_MS = 1400; // how long each thinking step stays active
 
 export default function Home() {
   const {
@@ -16,28 +19,63 @@ export default function Home() {
   } = useChat();
 
   const { agentStates, pipelineStage, runPipeline, resetPipeline } = useAgents();
-  const { text: streamText, streaming, stream, cancel } = useStreamer();
+  const { text: streamText, streaming, stream, cancel }            = useStreamer();
 
-  const [loading, setLoading]               = useState(false);
-  const [streamingMsgId, setStreamingMsgId] = useState(null);
-  const [uploadState, setUploadState]       = useState({ status: "idle", fileName: "" });
+  const [loading,         setLoading]         = useState(false);
+  const [streamingMsgId,  setStreamingMsgId]  = useState(null);
+  const [thinkingSteps,   setThinkingSteps]   = useState([]);
+  const [thinkingIdx,     setThinkingIdx]     = useState(-1);
+  const [uploadState,     setUploadState]     = useState({ status: "idle", fileName: "" });
 
-  // ── Send message ──────────────────────────────────────────────────────────
+  const stepTimersRef = useRef([]);
+
+  // ── Clear thinking timers ────────────────────────────────────────────────
+  const clearStepTimers = () => {
+    stepTimersRef.current.forEach(clearTimeout);
+    stepTimersRef.current = [];
+  };
+
+  // ── Animate thinking steps one by one ───────────────────────────────────
+  const animateThinkingSteps = useCallback((steps) => {
+    clearStepTimers();
+    setThinkingSteps(steps);
+    setThinkingIdx(0);
+
+    steps.forEach((_, i) => {
+      const t = setTimeout(() => {
+        setThinkingIdx(i);
+      }, i * STEP_DURATION_MS);
+      stepTimersRef.current.push(t);
+    });
+
+    // Mark all complete slightly before streaming begins
+    const tDone = setTimeout(() => {
+      setThinkingIdx(steps.length); // beyond last → all "done"
+    }, steps.length * STEP_DURATION_MS);
+    stepTimersRef.current.push(tDone);
+  }, []);
+
+  // ── Send handler ─────────────────────────────────────────────────────────
   const handleSend = useCallback(async (query) => {
     if (!query || loading) return;
 
     const chatId = activeChatId;
     setLoading(true);
     cancel();
+    clearStepTimers();
 
-    // 1. Add user message
+    // 1. User message
     addMessage(chatId, "user", query);
 
-    // 2. Add empty AI placeholder
+    // 2. Empty AI placeholder (streaming will fill it)
     const aiMsgId = addMessage(chatId, "assistant", "");
-    setStreamingMsgId(null); // loader shows until streaming begins
+    setStreamingMsgId(null);
 
-    // 3. Run visual pipeline
+    // 3. Optimistic fallback thinking states while waiting for backend
+    const fallbackSteps = parsePlanToStates("");
+    animateThinkingSteps(fallbackSteps);
+
+    // 4. Run agent panel animation
     runPipeline();
 
     try {
@@ -48,28 +86,52 @@ export default function Home() {
       });
       const data = await res.json();
 
-      // ✅ FIX: extract clean answer, discard plan from bubble
-      const { answer } = parseResponse(data);
+      // ✅ CRITICAL SEPARATION: extract plan vs answer
+      const { answer, plan } = parseResponse(data);
 
-      // 4. Stream the answer word-by-word
+      // 5. Re-derive thinking steps from actual backend plan (replaces fallback)
+      if (plan) {
+        clearStepTimers();
+        const planSteps = parsePlanToStates(plan);
+        animateThinkingSteps(planSteps);
+      }
+
+      // 6. Small delay to let last thinking step be seen before streaming starts
+      await new Promise(r => setTimeout(r, 600));
+
+      // 7. Stream only the clean answer — plan NEVER touches message state
       setStreamingMsgId(aiMsgId);
       stream(
         answer,
-        (chunk) => updateMessage(chatId, aiMsgId, chunk),          // live update
-        (full)  => {
-          updateMessage(chatId, aiMsgId, full, { done: true });     // final write
+        (chunk) => updateMessage(chatId, aiMsgId, chunk),
+        (full) => {
+          updateMessage(chatId, aiMsgId, full, { done: true });
           setStreamingMsgId(null);
           setLoading(false);
+          clearStepTimers();
+          setThinkingIdx(thinkingSteps.length); // mark all done
+          // Fade out thinking panel after brief delay
+          setTimeout(() => {
+            setThinkingSteps([]);
+            setThinkingIdx(-1);
+          }, 1800);
         }
       );
-    } catch (err) {
-      const errMsg = "Connection error. Is the backend running?";
+    } catch {
+      const errMsg = "Connection error — is the backend running?";
       updateMessage(chatId, aiMsgId, errMsg, { done: true });
       setStreamingMsgId(null);
       setLoading(false);
+      clearStepTimers();
+      setThinkingSteps([]);
+      setThinkingIdx(-1);
       resetPipeline();
     }
-  }, [loading, activeChatId, addMessage, updateMessage, runPipeline, resetPipeline, stream, cancel]);
+  }, [
+    loading, activeChatId, addMessage, updateMessage,
+    runPipeline, resetPipeline, stream, cancel,
+    animateThinkingSteps, thinkingSteps.length,
+  ]);
 
   // ── Upload ────────────────────────────────────────────────────────────────
   const handleUpload = useCallback(async (file) => {
@@ -101,8 +163,9 @@ export default function Home() {
       />
       <ChatWindow
         messages={activeChat?.messages ?? []}
-        pipelineStage={pipelineStage}
         loading={loading}
+        thinkingSteps={thinkingSteps}
+        thinkingIdx={thinkingIdx}
         streamingMsgId={streamingMsgId}
         streamText={streamText}
         onSend={handleSend}
