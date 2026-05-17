@@ -1,32 +1,29 @@
 """
-Critic agent responsible for evaluating and improving agent-generated answers.
+Critic agent — answer evaluation and refinement.
+Stays within its single responsibility: improve or pass through.
 """
 
-from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage
 from app.agents.base_agent import BaseAgent
 from app.utils.prompt_templates import CRITIC_PROMPT
+from app.utils.logger import get_logger
 
-_prompt = PromptTemplate(
-    input_variables=["answer"],
-    template=CRITIC_PROMPT,
-)
+logger = get_logger(__name__)
 
 
 class CriticAgent(BaseAgent):
-    """Agent that critiques and optionally improves a previously generated answer."""
+    """Evaluates and optionally improves the research answer."""
 
     async def run(self, input_text: str) -> str:
         """
-        Evaluate and optionally improve the provided answer.
-
         Args:
-            input_text: Candidate answer to evaluate.
+            input_text: The answer string produced by ResearchAgent.
 
         Returns:
-            Improved answer, or the original if no improvement is needed.
+            Improved or identical answer string.
         """
-        formatted_prompt: str = _prompt.format(answer=input_text)
-        messages = [HumanMessage(content=formatted_prompt)]
+        logger.info("CriticAgent — evaluating answer (%d chars)", len(input_text))
+        prompt = CRITIC_PROMPT.format(answer=input_text)
+        messages = [HumanMessage(content=prompt)]
         response = await self.llm.ainvoke(messages)
-        return response.content
+        return response.content.strip()
