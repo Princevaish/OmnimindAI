@@ -1,25 +1,66 @@
-// parseResponse.js — extract clean answer + plan from backend response
+// parseResponse.js — consume the structured backend response
+
+/**
+ * Parse the structured QueryResponse from the backend.
+ *
+ * Contract:
+ *   data.response       → rendered in chat bubble ONLY
+ *   data.thinking_steps → animated in ThinkingPipeline ONLY
+ *   data.tools_used     → rendered as tool badges
+ *   data.plan           → NEVER rendered in UI (internal metadata)
+ *
+ * @param {Object|string} data — raw fetch response body
+ * @returns {{ answer, thinkingSteps, toolsUsed, plan }}
+ */
 export function parseResponse(data) {
-  // data may be { response, plan } or just a string
-  const raw = typeof data === "string" ? data : data?.response ?? "";
-  const plan = typeof data === "string" ? "" : data?.plan ?? "";
+  if (!data || typeof data === "string") {
+    return {
+      answer: typeof data === "string" ? data : "No response.",
+      thinkingSteps: [],
+      toolsUsed: [],
+      plan: "",
+    };
+  }
 
-  // Strip "Plan:\n..." prefix that some backends return inside response
-  const cleaned = raw
-    .replace(/^plan:\s*/i, "")
-    .replace(/^#+\s*plan\s*\n+/im, "")
-    .trim();
-
-  return { answer: cleaned, plan };
+  return {
+    answer:        (data.response       ?? "").trim(),
+    thinkingSteps: Array.isArray(data.thinking_steps) ? data.thinking_steps : [],
+    toolsUsed:     Array.isArray(data.tools_used)     ? data.tools_used     : [],
+    plan:          (data.plan           ?? ""),    // metadata — DO NOT render
+  };
 }
 
+// Tool badge metadata
+const TOOL_META = {
+  web_search:  { icon: "🌐", label: "Web Search"     },
+  rag:         { icon: "📚", label: "Knowledge Base" },
+  calculator:  { icon: "🧮", label: "Calculator"     },
+  date:        { icon: "📅", label: "Date Tool"      },
+  equation:    { icon: "∑",  label: "Equation Solver"},
+};
+
+/**
+ * Convert tools_used key list into badge objects for rendering.
+ * @param {string[]} toolKeys
+ * @returns {Array<{key, icon, label}>}
+ */
+export function resolveToolBadges(toolKeys) {
+  if (!Array.isArray(toolKeys)) return [];
+  return toolKeys
+    .map(k => ({ key: k, ...(TOOL_META[k] ?? { icon: "🔧", label: k }) }))
+    .filter(Boolean);
+}
+
+/**
+ * Legacy: detect tools from answer text when backend doesn't return tools_used.
+ * Only used as a fallback.
+ */
 export function detectTools(text) {
   if (!text) return [];
-  const lower = text.toLowerCase();
   const tools = [];
-  if (/title:|web search|search result/i.test(lower)) tools.push({ key: "web",  icon: "🌐", label: "Web Search"     });
-  if (/\b\d+\s*[+\-*/]\s*\d+|calculator|equation|sympy/i.test(lower))  tools.push({ key: "math", icon: "🧮", label: "Calculator"     });
-  if (/knowledge base|retrieved|rag|document/i.test(lower))              tools.push({ key: "rag",  icon: "📚", label: "Knowledge Base" });
-  if (/today|current date|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i.test(lower)) tools.push({ key: "date", icon: "📅", label: "Date Tool" });
-  return tools;
+  if (/title:|web search|search result|\[\d+\]/i.test(text))             tools.push("web_search");
+  if (/\b\d+\s*[+\-*/]\s*\d+|calculator|equation|sympy/i.test(text))    tools.push("calculator");
+  if (/knowledge base|retrieved|rag|document/i.test(text))               tools.push("rag");
+  if (/today|current date|monday|tuesday|wednesday|thursday|friday/i.test(text)) tools.push("date");
+  return tools.map(k => ({ key: k, ...(TOOL_META[k] ?? { icon: "🔧", label: k }) }));
 }
