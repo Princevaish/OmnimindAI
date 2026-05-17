@@ -1,9 +1,8 @@
 """
-API route definitions.
+API routes — accepts queries, returns structured QueryResponse.
 
-Endpoints:
-    POST /ask              — run the full multi-agent pipeline.
-    GET  /debug/websearch  — test the web search tool in isolation.
+The route returns the full QueryResponse JSON including thinking_steps and
+tools_used. The frontend MUST NOT render the plan field in chat bubbles.
 """
 
 from fastapi import APIRouter, HTTPException
@@ -20,55 +19,34 @@ router = APIRouter()
 @router.post("/ask", response_model=QueryResponse)
 async def ask(request: QueryRequest) -> QueryResponse:
     """
-    Accept a user query, run the multi-agent pipeline, return the result.
+    Run the multi-agent pipeline for a user query.
 
-    Args:
-        request: QueryRequest with a non-empty query string.
-
-    Returns:
-        QueryResponse containing the pipeline's final answer.
-
-    Raises:
-        HTTPException 400: propagated AgentException from the pipeline.
-        HTTPException 500: any other unexpected failure.
+    Returns a structured response — the frontend should:
+      - Render only `response` in the chat bubble
+      - Animate `thinking_steps` in ThinkingPipeline
+      - Display `tools_used` as tool badges
+      - Never render `plan` directly
     """
     logger.info("POST /ask — query: %r", request.query)
-
     try:
-        result: str = await run_agent_pipeline(request.query)
-        logger.info("POST /ask — completed successfully")
-        return QueryResponse(response=result)
-
+        result = await run_agent_pipeline(request.query)
+        logger.info("POST /ask — OK  tools=%s", result.tools_used)
+        return result
     except AgentException as exc:
-        logger.warning("POST /ask — AgentException: %s | details=%s", exc.message, exc.details)
+        logger.warning("POST /ask — AgentException: %s", exc.message)
         raise HTTPException(status_code=400, detail=exc.message) from exc
-
     except Exception as exc:
-        logger.error("POST /ask — unexpected error: %s", str(exc), exc_info=True)
+        logger.error("POST /ask — unexpected: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Pipeline failed unexpectedly.") from exc
 
 
 @router.get("/debug/websearch")
 async def debug_websearch(q: str = "latest AI news") -> dict:
-    """
-    Debug endpoint: run web_search in isolation and return raw snippets.
-
-    Usage:
-        GET /api/v1/debug/websearch?q=your+query+here
-
-    Args:
-        q: Search query string. Defaults to "latest AI news".
-
-    Returns:
-        Dict with query, result count, and list of snippets.
-    """
-    logger.info("GET /debug/websearch — query: %r", q)
-
+    """Test Tavily web search in isolation."""
+    logger.info("GET /debug/websearch — q=%r", q)
     try:
-        snippets: list[str] = web_search(q)
-        logger.info("GET /debug/websearch — returned %d snippet(s)", len(snippets))
+        snippets = web_search(q)
         return {"query": q, "count": len(snippets), "results": snippets}
-
     except Exception as exc:
-        logger.error("GET /debug/websearch — error: %s", str(exc), exc_info=True)
+        logger.error("GET /debug/websearch — %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Web search failed.") from exc
