@@ -1,68 +1,107 @@
 """
-Centralized prompt template definitions for all agents.
+Centralized prompt template definitions.
 
-Each template is defined as a raw string constant and wrapped in a
-LangChain PromptTemplate only at the point of use — keeping this
-module free of LangChain imports and independently testable.
+ARCHITECTURE CONTRACT
+─────────────────────
+Every prompt instructs the LLM to stay within its cognitive role:
+
+  PlannerAgent  → decomposes the task, decides WHICH tools are needed,
+                  outputs JSON routing metadata. NEVER answers directly.
+
+  ResearchAgent → executes the tools the Planner selected, assembles
+                  retrieved context, synthesises a grounded answer.
+
+  CriticAgent   → evaluates and refines the answer. Short and directive.
 """
 
-# ---------------------------------------------------------------------------
-# PlannerAgent
-# ---------------------------------------------------------------------------
+# ── Planner ──────────────────────────────────────────────────────────────────
+#
+# Outputs JSON so the router can parse routing decisions without LLM
+# hallucination about what "searching the web" looks like in prose.
+PLANNER_PROMPT: str = """You are a task decomposition and routing agent.
+Your ONLY job is to analyze the user query and decide which tools are needed.
+You must NEVER answer the query yourself.
 
-PLANNER_PROMPT: str = (
-    "Break the following user query into clear step-by-step reasoning:\n{query}"
-)
+USER QUERY: {query}
 
-# ---------------------------------------------------------------------------
-# ResearchAgent
-# ---------------------------------------------------------------------------
+Analyze the query and respond with ONLY the following JSON (no markdown, no explanation):
 
-RESEARCH_PROMPT: str = """You are an intelligent research agent.
-Your task is to answer the user's query using the provided context.
+{{
+  "requires_web_search": true/false,
+  "requires_rag": true/false,
+  "requires_math": false,
+  "plan": "one-sentence description of what you will do",
+  "thinking_steps": ["step 1 label", "step 2 label", "step 3 label"]
+}}
 
-CRITICAL RULES:
+ROUTING RULES (apply ALL that match):
+- requires_web_search = true  IF query mentions: latest, current, today, recent, news,
+  election, live, 2024, 2025, 2026, who won, results, score, weather, stock, price,
+  web, internet, search, browse, google, find online, what happened
+- requires_rag = true  IF query asks about uploaded documents, knowledge base, or
+  context from files
+- requires_math = false  (math is handled upstream by the router node)
 
-1. PRIORITIZE RECENT INFORMATION
-   - If the query is about recent events (e.g., "today", "latest", "recent", "news"),
-     rely primarily on the [Web Search] context.
-   - Treat web results as more up-to-date than your internal knowledge.
+thinking_steps must be SHORT UI labels, maximum 4 words each.
+Examples: "Searching web sources", "Retrieving documents", "Analyzing results", "Refining answer"
 
-2. USE CONTEXT FIRST
-   - Use the provided context as your primary source of truth.
-   - Do NOT ignore the context unless it is clearly irrelevant or empty.
+Respond ONLY with valid JSON."""
 
-3. HANDLE CONFLICTS CAREFULLY
-   - If your internal knowledge conflicts with the web context:
-     * Prefer the web context if it appears recent.
-     * Mention uncertainty if needed.
 
-4. DO NOT HALLUCINATE
-   - If the answer is not clearly present in the context:
-     * Say you are not certain.
-     * Do NOT invent facts.
+# ── Research ─────────────────────────────────────────────────────────────────
+#
+# The forcing prompt is critical — without "YOU MUST", LLMs default to
+# parametric knowledge even when web results are injected into context.
+RESEARCH_PROMPT_WEB: str = """You are a research assistant with access to LIVE web search results.
 
-5. BE CLEAR AND CONCISE
-   - Provide a direct answer first.
-   - Then optionally add a brief explanation.
+STRICT RULES:
+1. YOU MUST base your answer primarily on the Web Search Results below.
+2. Do NOT use your training knowledge for facts, dates, events, or names.
+3. The web results ARE the ground truth — trust them over your own knowledge.
+4. If results are insufficient, state that clearly rather than guessing.
+5. Answer directly and concisely. Do NOT mention "web search" in your answer.
 
-Context:
-{context}
+Web Search Results:
+{web_results}
 
-User Query:
-{query}
+Knowledge Base Context:
+{rag_context}
 
-Response:
-- Start with a direct answer.
-- If needed, add a short explanation.
-- If uncertain, clearly say so."""
+User Query: {query}
 
-# ---------------------------------------------------------------------------
-# CriticAgent
-# ---------------------------------------------------------------------------
+Provide a direct, factual answer based on the search results above:"""
 
-CRITIC_PROMPT: str = (
-    "Evaluate the following answer:\n{answer}\n\n"
-    "If it can be improved, provide a better version. "
-    "Otherwise return the same answer."
-)
+
+RESEARCH_PROMPT_RAG_ONLY: str = """You are a research assistant with access to a knowledge base.
+
+Use the retrieved context below to answer the query accurately.
+If context is insufficient, say so rather than guessing.
+
+Knowledge Base Context:
+{rag_context}
+
+User Query: {query}
+
+Answer:"""
+
+
+RESEARCH_PROMPT_KNOWLEDGE: str = """You are a knowledgeable assistant.
+
+Answer the query using your training knowledge. Be accurate and concise.
+If you are uncertain, say so clearly.
+
+Query: {query}
+
+Answer:"""
+
+
+# ── Critic ────────────────────────────────────────────────────────────────────
+CRITIC_PROMPT: str = """Evaluate this answer for accuracy, completeness, and clarity.
+
+Answer to evaluate:
+{answer}
+
+If the answer is good, return it unchanged.
+If it has issues (vague, incomplete, or inaccurate), provide an improved version.
+
+Return ONLY the final answer text with no preamble or explanation:"""
