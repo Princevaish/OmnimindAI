@@ -1,61 +1,52 @@
 """
-Agent service layer — orchestrates the full LangGraph multi-agent pipeline.
+Agent service layer — thin orchestration wrapper.
 
-Wraps every stage in structured logging and converts all unhandled
-exceptions into AgentException so the API layer receives a typed,
-loggable error rather than a raw LLM stack trace.
+Converts run_graph() output into a QueryResponse.
+The service layer is the last place plan text could leak to the API —
+it explicitly excludes plan from the response body in production,
+but preserves it in the QueryResponse.plan field for debugging.
 """
 
 from app.graph.executor import run_graph
+from app.api.schemas import QueryResponse
 from app.exceptions.custom_exceptions import AgentException
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-async def run_agent_pipeline(query: str) -> str:
+async def run_agent_pipeline(query: str) -> QueryResponse:
     """
-    Execute the full multi-agent pipeline for a given user query.
-
-    Stages (orchestrated inside run_graph via LangGraph):
-        1. router_node   — tool short-circuit check
-        2. planner_node  — step-by-step reasoning plan
-        3. research_node — grounded answer via RAG + web search
-        4. critic_node   — reflection and answer improvement
+    Run the full multi-agent pipeline and return a structured QueryResponse.
 
     Args:
-        query: Raw user input string from the API layer.
+        query: Raw user input.
 
     Returns:
-        Formatted pipeline output:
-            "Plan:\\n{plan}\\n\\nAnswer:\\n{final_answer}"
-            or just "{final_answer}" for router short-circuits.
+        QueryResponse with response, thinking_steps, tools_used, and plan.
 
     Raises:
-        AgentException: wraps any exception raised during graph execution,
-            preserving the original message and query as structured details.
+        AgentException on pipeline failure.
     """
-    logger.info("Pipeline START — query: %r", query)
+    logger.info("run_agent_pipeline — START  query=%r", query)
 
     try:
-        logger.info("Stage: router_node — evaluating query intent")
-        result: str = await run_graph(query)
-        logger.info("Pipeline COMPLETE — output length: %d chars", len(result))
-        logger.debug("Pipeline output: %s", result)
-        return result
-
-    except AgentException:
-        # Already typed — re-raise without wrapping
-        raise
-
-    except Exception as exc:
-        logger.error(
-            "Pipeline FAILED — query: %r | error: %s",
-            query,
-            str(exc),
-            exc_info=True,
+        result = await run_graph(query)
+        logger.info(
+            "run_agent_pipeline — COMPLETE  tools=%s  steps=%s",
+            result["tools_used"], result["thinking_steps"],
         )
+        return QueryResponse(
+            response=result["response"],
+            thinking_steps=result["thinking_steps"],
+            tools_used=result["tools_used"],
+            plan=result["plan"],      # kept for /debug endpoints; frontend ignores
+        )
+    except AgentException:
+        raise
+    except Exception as exc:
+        logger.error("run_agent_pipeline — FAILED: %s", exc, exc_info=True)
         raise AgentException(
-            message=f"Agent pipeline failed: {exc}",
+            message=f"Pipeline failed: {exc}",
             details={"query": query, "error_type": type(exc).__name__},
         ) from exc
