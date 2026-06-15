@@ -6,7 +6,7 @@ The critical fix is calling vectorstore._client.heartbeat() after
 add_documents() to confirm Chroma actually persisted the vectors.
 """
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from app.rag.vectorstore import get_vectorstore
 from app.rag.extractor import extract_text
