@@ -16,3 +16,4 @@ sympy
 PyMuPDF
 pdfplumber
 python-docx
+python-multipart
