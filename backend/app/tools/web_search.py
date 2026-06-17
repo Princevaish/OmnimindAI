@@ -6,7 +6,7 @@ is captured by the centralised logging system and carries consistent
 timestamps, levels, and module names.
 """
 
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_community.tools.tavily_search import TavilySearch, TavilySearchResults
 from app.core.config import get_settings
 from app.exceptions.custom_exceptions import ToolException
 from app.utils.logger import get_logger
@@ -19,7 +19,8 @@ logger = get_logger(__name__)
 
 _settings = get_settings()
 
-_tavily: TavilySearchResults = TavilySearchResults(
+...
+_tavily: TavilySearch = TavilySearch(
     tavily_api_key=_settings.TAVILY_API_KEY,
     max_results=5,
     search_depth="advanced",
